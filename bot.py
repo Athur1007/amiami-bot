@@ -6,7 +6,7 @@ from playwright.sync_api import sync_playwright
 from deep_translator import GoogleTranslator
 
 # DÁN WEBHOOK URL CỦA BẠN VÀO ĐÂY
-DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1559631558350995487/bEqnyYL1QwmFJUSGsVZf6HPWal91AaHL1NfbPAwLMiE1NBfxN0baQ64LpCpFTM15GXzs"
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 
 # CẤU HÌNH SỐ TRANG MUỐN QUÉT (Mỗi trang 60 figure)
 MAX_PAGES = 3 
