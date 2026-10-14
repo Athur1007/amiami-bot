@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import re
 import requests
@@ -5,11 +6,10 @@ import time
 from playwright.sync_api import sync_playwright
 from deep_translator import GoogleTranslator
 
-# DÁN WEBHOOK URL CỦA BẠN VÀO ĐÂY
+# Lấy Webhook từ GitHub Secrets
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 
-# CẤU HÌNH SỐ TRANG MUỐN QUÉT (Mỗi trang 60 figure)
-MAX_PAGES = 3 
+MAX_PAGES = 2 
 
 def setup_database():
     conn = sqlite3.connect('figures.db')
@@ -28,17 +28,14 @@ def setup_database():
     return conn
 
 def send_to_discord(title_vi, title_ja, price, link, img_url):
-    # 1. Xử lý giới hạn 256 ký tự của Discord cho tiêu đề
     safe_title = f"🔔 {title_vi}"
     if len(safe_title) > 250:
         safe_title = safe_title[:247] + "..." 
         
-    # 2. Xử lý giới hạn 1024 ký tự cho phần tên gốc
     safe_title_ja = title_ja
     if len(safe_title_ja) > 1000:
         safe_title_ja = safe_title_ja[:997] + "..."
 
-    # 3. Vá lỗi thiếu https: trong link ảnh
     if img_url and img_url.startswith("//"):
         img_url = "https:" + img_url
 
@@ -70,30 +67,30 @@ def scrape_amiami_jp():
     translator = GoogleTranslator(source='ja', target='vi')
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False) 
-        page = browser.new_page()
+        # Bắt buộc để headless=True trên GitHub Actions
+        browser = p.chromium.launch(headless=True) 
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+        page = context.new_page()
 
-        # Vòng lặp chạy qua từng trang (Từ trang 1 đến MAX_PAGES)
         for page_num in range(1, MAX_PAGES + 1):
             print(f"\n=================== ĐANG QUÉT TRANG {page_num}/{MAX_PAGES} ===================")
-            
-            # Đã thêm &s_cate_tag=1 (Chỉ lấy Figure), s_sortkey=regtimed (Mới nhất) và pagemax=60
             url = f"https://slist.amiami.jp/top/search/list?s_st_list_preorder_available=1&s_cate_tag=1&s_sortkey=regtimed&pagemax=60&getcnt=0&pagecnt={page_num}"
             page.goto(url)
 
             try:
-                page.wait_for_selector('.product_box', timeout=15000)
+                page.wait_for_selector('.product_box', timeout=20000)
             except Exception:
-                print(f"Trang {page_num} tải quá chậm hoặc không còn sản phẩm. Dừng quét!")
+                print(f"Trang {page_num} tải quá chậm hoặc không có dữ liệu. Dừng quét!")
                 break
 
             products = page.locator('.product_box > a')
             count = products.count()
-            print(f"Tìm thấy {count} figure trên trang {page_num}. Đang đối chiếu Database...\n")
+            print(f"Tìm thấy {count} figure trên trang {page_num}.\n")
 
             for i in range(count):
                 item = products.nth(i)
-                
                 title_ja = item.locator('.product_name_inner').inner_text().strip()
                 price = item.locator('.product_price').inner_text().strip()
                 link = item.get_attribute('href')
@@ -115,11 +112,9 @@ def scrape_amiami_jp():
                         time.sleep(3) 
                         title_vi = translator.translate(title_ja)
                     except Exception:
-                        print("   -> Lỗi dịch thuật. Dùng tạm tên gốc!")
                         title_vi = title_ja
 
-                    print(f"🌟 [MỚI - Trang {page_num}] {title_vi}")
-                    
+                    print(f"🌟 [MỚI] {title_vi}")
                     send_to_discord(title_vi, title_ja, price, link, img_url)
                     
                     cursor.execute(
@@ -128,14 +123,11 @@ def scrape_amiami_jp():
                     )
                     conn.commit()
                 else:
-                    print(f"➖ [Đã quét] {title_ja[:30]}... (Bỏ qua)")
+                    print(f"➖ [Đã quét] {title_ja[:30]}...")
 
-            # Nghỉ 3 giây trước khi lật sang trang tiếp theo
             if page_num < MAX_PAGES:
-                print(f"\nĐã xong trang {page_num}. Nghỉ 3 giây trước khi sang trang {page_num + 1}...")
                 time.sleep(3)
 
-        print("\nHoàn tất toàn bộ quá trình! Đóng trình duyệt.")
         browser.close()
         conn.close()
 
