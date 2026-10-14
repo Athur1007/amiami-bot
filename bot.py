@@ -10,6 +10,7 @@ from deep_translator import GoogleTranslator
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 
 MAX_PAGES = 2 
+EXCHANGE_RATE = 175 # Tỉ giá quy đổi Yên sang VNĐ
 
 def setup_database():
     conn = sqlite3.connect('figures.db')
@@ -27,7 +28,26 @@ def setup_database():
     conn.commit()
     return conn
 
-def send_to_discord(title_vi, title_ja, price, link, img_url):
+def format_price_vnd(price_str):
+    # Lọc lấy các con số đầu tiên trong chuỗi giá (bỏ dấu phẩy, chữ nghĩa đi kèm)
+    clean_str = price_str.replace(',', '')
+    match = re.search(r'(\d+)', clean_str)
+    if match:
+        yen = int(match.group(1))
+        vnd = yen * EXCHANGE_RATE
+        # Định dạng lại dấu phẩy cho dễ đọc (VD: 24,750 Yên (~4,331,250 VNĐ))
+        return f"**{yen:,}** Yên (~{vnd:,} VNĐ)"
+    return f"**{price_str}** Yên"
+
+def extract_release_date(html_content):
+    # Tìm ngày phát hành ẩn trong comment HTML của AmiAmi: <!-- 《2027-03-31 00:00:00》 -->
+    match = re.search(r'《(\d{4})-(\d{2})-\d{2}', html_content)
+    if match:
+        year, month = match.group(1), match.group(2)
+        return f"Tháng {month}/{year}"
+    return "Chưa rõ"
+
+def send_to_discord(title_vi, title_ja, price_display, release_date, link, img_url):
     safe_title = f"🔔 {title_vi}"
     if len(safe_title) > 250:
         safe_title = safe_title[:247] + "..." 
@@ -46,11 +66,12 @@ def send_to_discord(title_vi, title_ja, price, link, img_url):
                 "url": link,
                 "color": 16744192, 
                 "fields": [
-                    {"name": "💰 Giá", "value": f"**{price}** Yên", "inline": True},
+                    {"name": "💰 Giá", "value": price_display, "inline": True},
+                    {"name": "📅 Phát hành", "value": release_date, "inline": True},
                     {"name": "🇯🇵 Tên gốc", "value": safe_title_ja, "inline": False}
                 ],
                 "image": {"url": img_url},
-                "footer": {"text": "AmiAmi Pre-order Bot"}
+                "footer": {"text": f"AmiAmi Pre-order Bot • Tỉ giá: {EXCHANGE_RATE}"}
             }
         ]
     }
@@ -67,7 +88,6 @@ def scrape_amiami_jp():
     translator = GoogleTranslator(source='ja', target='vi')
 
     with sync_playwright() as p:
-        # Bắt buộc để headless=True trên GitHub Actions
         browser = p.chromium.launch(headless=True) 
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -91,9 +111,17 @@ def scrape_amiami_jp():
 
             for i in range(count):
                 item = products.nth(i)
+                
                 title_ja = item.locator('.product_name_inner').inner_text().strip()
-                price = item.locator('.product_price').inner_text().strip()
+                price_raw = item.locator('.product_price').inner_text().strip()
                 link = item.get_attribute('href')
+                
+                # Lấy mã HTML bên trong thẻ tên sản phẩm để bóc tách comment ngày phát hành
+                name_html = item.locator('.product_name_inner').inner_html()
+                release_date = extract_release_date(name_html)
+                
+                # Tính toán sang VNĐ
+                price_display = format_price_vnd(price_raw)
                 
                 if link and not link.startswith('http'):
                     link = f"https://www.amiami.jp{link}"
@@ -114,12 +142,12 @@ def scrape_amiami_jp():
                     except Exception:
                         title_vi = title_ja
 
-                    print(f"🌟 [MỚI] {title_vi}")
-                    send_to_discord(title_vi, title_ja, price, link, img_url)
+                    print(f"🌟 [MỚI] {title_vi} | {price_display} | {release_date}")
+                    send_to_discord(title_vi, title_ja, price_display, release_date, link, img_url)
                     
                     cursor.execute(
                         "INSERT INTO amiami_preorder (gcode, title_ja, title_vi, price, link, image_url) VALUES (?, ?, ?, ?, ?, ?)", 
-                        (gcode, title_ja, title_vi, price, link, img_url)
+                        (gcode, title_ja, title_vi, price_raw, link, img_url)
                     )
                     conn.commit()
                 else:
